@@ -1,20 +1,28 @@
-// This code is for the failsafe of the Drone when control signal is lost
-
+#include <ESP32Servo.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
-#include <ESP32Servo.h>
 
 #define MOTOR1_PIN 32
 #define MOTOR2_PIN 26
 #define MOTOR3_PIN 33
 #define MOTOR4_PIN 25
+#define RXD2 16
+#define TXD2 17
+
+int dist; /*----actual distance measurements of LiDAR---*/
+int strength; /*----signal strength of LiDAR----------------*/
+float temprature;
+unsigned char check;        /*----save check value------------------------*/
+int i;
+unsigned char uart[9];  /*----save data measured by LiDAR-------------*/
+const int HEADER=89; /*----frame header of data package------------*/
+int rec_debug_state = 1;//receive state for frame
+
 
 Adafruit_MPU6050 mpu;
 
 unsigned long loop_timer;
-
-Servo MOTOR1, MOTOR2, MOTOR3, MOTOR4;
 
 float roll_estimate = 0.0;
 float pitch_estimate = 0.0;
@@ -22,113 +30,169 @@ float pitch_estimate = 0.0;
 float prev_pitch_error = 0.0;
 float prev_roll_error = 0.0;
 
-void setup() 
-{
+Servo MOTOR1, MOTOR2, MOTOR3, MOTOR4;
+
+void setup() {
 
   Serial.begin(115200);
-
-  // while (!Serial)
-  //   delay(10); // will pause Zero, Leonardo, etc until serial console opens
-
-  Serial.println("Motor Setup!");
 
   MOTOR1.attach(MOTOR1_PIN, 1000, 2000);
   MOTOR2.attach(MOTOR2_PIN, 1000, 2000);
   MOTOR3.attach(MOTOR3_PIN, 1000, 2000);
   MOTOR4.attach(MOTOR4_PIN, 1000, 2000);
-  delay(4000);
 
-  Serial.println("Motor Test!");
+  delay(1000);
 
-  MOTOR1.writeMicroseconds(1200);
-  MOTOR2.writeMicroseconds(1200);
-  MOTOR3.writeMicroseconds(1200);
-  MOTOR4.writeMicroseconds(1200);
-  delay(2000);
+  loop_timer = micros();
+  while (micros() - loop_timer < 5000000) {
+    MOTOR1.writeMicroseconds(1200);
+    MOTOR2.writeMicroseconds(1200);
+    MOTOR3.writeMicroseconds(1200);
+    MOTOR4.writeMicroseconds(1200);
+  }
+  delay(100);
+  loop_timer = micros();
+  
+  while (micros() - loop_timer < 5000000) {
+    MOTOR1.writeMicroseconds(1000);
+    MOTOR2.writeMicroseconds(1000);
+    MOTOR3.writeMicroseconds(1000);
+    MOTOR4.writeMicroseconds(1000);
+  }
+  delay(100);
+  loop_timer = micros();
 
-  Serial.println("Adafruit MPU6050 test!");
-
-  // Try to initialize!
-  if (!mpu.begin()) {
-    Serial.println("Failed to find MPU6050 chip");
-    while (1) {
+  if(!mpu.begin()){
+    Serial.println("Failed to find MPU chip!");
+    while(1){
       delay(10);
     }
   }
-  Serial.println("MPU6050 Found!");
+  
+  Serial.println("MPU found!");
 
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  Serial.print("Accelerometer range set to: ");
-  switch (mpu.getAccelerometerRange()) {
-  case MPU6050_RANGE_2_G:
-    Serial.println("+-2G");
-    break;
-  case MPU6050_RANGE_4_G:
-    Serial.println("+-4G");
-    break;
-  case MPU6050_RANGE_8_G:
-    Serial.println("+-8G");
-    break;
-  case MPU6050_RANGE_16_G:
-    Serial.println("+-16G");
-    break;
-  }
+  Serial.print("Accelerometer range set to: +-8G");
+
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  Serial.print("Gyro range set to: ");
-  switch (mpu.getGyroRange()) {
-  case MPU6050_RANGE_250_DEG:
-    Serial.println("+- 250 deg/s");
-    break;
-  case MPU6050_RANGE_500_DEG:
-    Serial.println("+- 500 deg/s");
-    break;
-  case MPU6050_RANGE_1000_DEG:
-    Serial.println("+- 1000 deg/s");
-    break;
-  case MPU6050_RANGE_2000_DEG:
-    Serial.println("+- 2000 deg/s");
-    break;
-  }
+  Serial.print("Gyro range set to: +-500 deg/s ");
 
   mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
-  Serial.print("Filter bandwidth set to: ");
-  switch (mpu.getFilterBandwidth()) {
-  case MPU6050_BAND_260_HZ:
-    Serial.println("260 Hz");
-    break;
-  case MPU6050_BAND_184_HZ:
-    Serial.println("184 Hz");
-    break;
-  case MPU6050_BAND_94_HZ:
-    Serial.println("94 Hz");
-    break;
-  case MPU6050_BAND_44_HZ:
-    Serial.println("44 Hz");
-    break;
-  case MPU6050_BAND_21_HZ:
-    Serial.println("21 Hz");
-    break;
-  case MPU6050_BAND_10_HZ:
-    Serial.println("10 Hz");
-    break;
-  case MPU6050_BAND_5_HZ:
-    Serial.println("5 Hz");
-    break;
-  }
-
-  Serial.println("");
-
-
+  Serial.print("Filter bandwidth set to: 5 Hz");
 
   delay(1000);
+  
 }
 
-void loop() {
-  sensors_event_t a, g, temp;
-    /* Get new sensor events with the readings */
+
+void Get_Lidar_data(){
+  
+  if (Serial2.available()) //check if serial port has data input
+      {
+      if(rec_debug_state == 1)
+          {  //the first byte
+            uart[0]=Serial2.read();
+            if(uart[0] == 89)
+                {
+                  check = uart[0];
+                  rec_debug_state = 2;
+                }
+          }
+          
+      else if(rec_debug_state == 2)
+         {//the second byte
+          uart[1]=Serial2.read();
+          
+          if(uart[1] == 89)
+              {
+                check += uart[1];
+                rec_debug_state = 3;
+              }
+          else{
+                rec_debug_state = 1;
+              }
+      }
     
+    else if(rec_debug_state == 3)
+            {
+              uart[2]=Serial2.read();
+              check += uart[2];
+              rec_debug_state = 4;
+            }
+            
+    else if(rec_debug_state == 4)
+            {
+              uart[3]=Serial2.read();
+              check += uart[3];
+              rec_debug_state = 5;
+            }
+    else if(rec_debug_state == 5)
+            {
+              uart[4]=Serial2.read();
+              check += uart[4];
+              rec_debug_state = 6;
+            }
+    else if(rec_debug_state == 6)
+            {
+              uart[5]=Serial2.read();
+              check += uart[5];
+              rec_debug_state = 7;
+            }
+    else if(rec_debug_state == 7)
+            {
+              uart[6]=Serial2.read();
+              check += uart[6];
+              rec_debug_state = 8;
+            }
+    else if(rec_debug_state == 8)
+            {
+              uart[7]=Serial2.read();
+              check += uart[7];
+              rec_debug_state = 9;
+            }
+    
+    else if (rec_debug_state == 9)
+            {
+              uart[8]=Serial2.read();
+              if(uart[8] == check)
+                
+                {
+                  
+                  dist = uart[2] + uart[3]*256;//the distance
+//                  strength = uart[4] + uart[5]*256;//the strength
+//                  temprature = uart[6] + uart[7] *256;//calculate chip temprature
+//                  temprature = temprature/8 - 256;                              
+//                  Serial.print("dist = ");
+//                  Serial.print(dist); //output measure distance value of LiDAR
+//                  Serial.print('\n');
+//                  Serial.print("strength = ");
+//                  Serial.print(strength); //output signal strength value
+//                  Serial.print('\n');
+//                  Serial.print("\t Chip Temprature = ");
+//                  Serial.print(temprature);
+//                  Serial.println(" celcius degree"); //output chip temperature of Lidar                                                       
+                  while(Serial2.available()){Serial2.read();} // This part is added becuase some previous packets are there in the buffer so to clear serial buffer and get fresh data.
+                  delay(100);
+                 }
+                 
+            rec_debug_state = 1;
+          }
+    }
+}
+
+
+void loop(){
+
+  Get_Lidar_data();
+  
+  sensors_event_t a,g,temp;
+
   mpu.getEvent(&a, &g, &temp);
 
+  float K_P;
+  float K_D;
+  float K_I;
+  
   float K_Proll = 5;
   float K_Droll = 0.5;
   float K_Iroll = 0.0;
@@ -152,25 +216,15 @@ void loop() {
   pitch_estimate = estimate_accel_pitch*alpha + (1-alpha)*(pitch_estimate + sample_time * estimate_gyro_pitch_rate);
   roll_estimate = (estimate_accel_roll*alpha + (1-alpha)*(roll_estimate + sample_time * estimate_gyro_roll_rate)) - 0.05;
 
-  // Eliminating the bias term from the estimates
-  // pitch_estimate = pitch_estimate*180/PI;
-  // roll_estimate = roll_estimate*180/PI;
+  //N_thrust = 1420;
 
-  // Serial.print("Pitch Estimate:");
-  // Serial.print(pitch_estimate);
-  // Serial.print(", Roll Estimate:");
-  // Serial.print(roll_estimate);
-
-  // Serial.println(" ");
-  N_thrust = 1250;
+  N_thrust = K_P*(dist) + K_D*(dist-prev_dist)/sample_time + K_I*(dist + prev_dist)*sample_time
+  
   N_roll = K_Proll*(roll_estimate) + K_Droll*(roll_estimate-prev_roll_error)/sample_time + K_Iroll*(roll_estimate+prev_roll_error)*sample_time/2;
   N_pitch = K_Ppitch*(pitch_estimate) + K_Dpitch*(pitch_estimate-prev_pitch_error)/sample_time + K_Ipitch*(pitch_estimate+prev_pitch_error)*sample_time/2;
 
-  // N_roll = int(round(N_roll));
-  // N_pitch = int(round(N_pitch));
   prev_roll_error = roll_estimate;
   prev_pitch_error = pitch_estimate;
-  // prev_roll_error = roll_estimate;
 
   N_1 = N_thrust - N_pitch - N_roll;
   N_2 = N_thrust + N_pitch - N_roll;
@@ -187,16 +241,25 @@ void loop() {
   Serial.println(N_4);
   Serial.println(" ");
 
-  MOTOR1.writeMicroseconds(N_1);
-  MOTOR2.writeMicroseconds(N_2);
-  MOTOR3.writeMicroseconds(N_3);
-  MOTOR4.writeMicroseconds(N_4);
+  if (N_1<=1500 && N_2<=1500 && N_3<=1500 && N_4<=1500){
+    
+    MOTOR1.writeMicroseconds(N_1);
+    MOTOR2.writeMicroseconds(N_2);
+    MOTOR3.writeMicroseconds(N_3);
+    MOTOR4.writeMicroseconds(N_4);
+  }
 
-  // MOTOR1.writeMicroseconds(1200);
-  // MOTOR2.writeMicroseconds(0);
-  // MOTOR3.writeMicroseconds(0);
-  // MOTOR4.writeMicroseconds(0);
+  else{
   
+    MOTOR1.writeMicroseconds(1420);
+    MOTOR2.writeMicroseconds(1420);
+    MOTOR3.writeMicroseconds(1420);
+    MOTOR4.writeMicroseconds(1420);
+  }
 
-  delay(sample_time*1000);
+  prev_dist = dist;
+
+  while(micros() - loop_timer < 1000);
+  loop_timer = micros();
+  
 }
